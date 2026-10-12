@@ -19,6 +19,7 @@
 #include "Encoder.hh"
 #include "Zigzag.hh"
 #include <array>
+#include <bit>
 
 namespace avro {
 
@@ -79,13 +80,23 @@ void BinaryEncoder::encodeLong(int64_t l) {
 }
 
 void BinaryEncoder::encodeFloat(float f) {
-    const auto *p = reinterpret_cast<const uint8_t *>(&f);
-    out_.writeBytes(p, sizeof(float));
+    auto bits = std::bit_cast<uint32_t>(f);
+    std::array<uint8_t, sizeof(bits)> bytes{};
+    for (auto &byte : bytes) {
+        byte = static_cast<uint8_t>(bits);
+        bits >>= 8;
+    }
+    out_.writeBytes(bytes.data(), bytes.size());
 }
 
 void BinaryEncoder::encodeDouble(double d) {
-    const auto *p = reinterpret_cast<const uint8_t *>(&d);
-    out_.writeBytes(p, sizeof(double));
+    auto bits = std::bit_cast<uint64_t>(d);
+    std::array<uint8_t, sizeof(bits)> bytes{};
+    for (auto &byte : bytes) {
+        byte = static_cast<uint8_t>(bits);
+        bits >>= 8;
+    }
+    out_.writeBytes(bytes.data(), bytes.size());
 }
 
 void BinaryEncoder::encodeString(const std::string &s) {

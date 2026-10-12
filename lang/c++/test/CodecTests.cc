@@ -25,6 +25,8 @@
 #include "Specific.hh"
 #include "ValidSchema.hh"
 
+#include <array>
+#include <bit>
 #include <boost/bind/bind.hpp>
 #include <cstdint>
 #include <functional>
@@ -2023,6 +2025,101 @@ static void testLimitsBinaryCodec() {
     testLimits(binaryEncoder(), binaryDecoder());
 }
 
+template<typename Bits>
+struct BinaryFloatingPointData {
+    Bits bits;
+    std::array<uint8_t, sizeof(Bits)> bytes;
+};
+
+// Fixed wire bytes, independent of the host byte order and of the codec.
+// Include signed zero, normal and subnormal limits, infinities and NaN payloads.
+const BinaryFloatingPointData<uint32_t> binaryFloatData[] = {
+    {0x00000000, {0x00, 0x00, 0x00, 0x00}},
+    {0x80000000, {0x00, 0x00, 0x00, 0x80}},
+    {0x3f800000, {0x00, 0x00, 0x80, 0x3f}},
+    {0xc0200000, {0x00, 0x00, 0x20, 0xc0}},
+    {0x3eaaaaab, {0xab, 0xaa, 0xaa, 0x3e}},
+    {0x00000001, {0x01, 0x00, 0x00, 0x00}},
+    {0x007fffff, {0xff, 0xff, 0x7f, 0x00}},
+    {0x00800000, {0x00, 0x00, 0x80, 0x00}},
+    {0x7f7fffff, {0xff, 0xff, 0x7f, 0x7f}},
+    {0x7f800000, {0x00, 0x00, 0x80, 0x7f}},
+    {0xff800000, {0x00, 0x00, 0x80, 0xff}},
+    {0x7fc00000, {0x00, 0x00, 0xc0, 0x7f}},
+    {0x7fc12345, {0x45, 0x23, 0xc1, 0x7f}},
+    {0xffc54321, {0x21, 0x43, 0xc5, 0xff}},
+};
+
+const BinaryFloatingPointData<uint64_t> binaryDoubleData[] = {
+    {0x0000000000000000, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {0x8000000000000000, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80}},
+    {0x3ff0000000000000, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f}},
+    {0xc004000000000000, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xc0}},
+    {0x3fd5555555555555, {0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0xd5, 0x3f}},
+    {0x0000000000000001, {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {0x000fffffffffffff, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x00}},
+    {0x0010000000000000, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00}},
+    {0x7fefffffffffffff, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xef, 0x7f}},
+    {0x7ff0000000000000, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x7f}},
+    {0xfff0000000000000, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0xff}},
+    {0x7ff8000000000000, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x7f}},
+    {0x7ff8123456789abc, {0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0xf8, 0x7f}},
+    {0xfff8abcdef012345, {0x45, 0x23, 0x01, 0xef, 0xcd, 0xab, 0xf8, 0xff}},
+};
+
+template<typename Float, typename Bits, size_t N>
+static void testBinaryFloatingPointEncoding(const BinaryFloatingPointData<Bits> (&data)[N],
+                                            void (Encoder::*encode)(Float)) {
+    for (size_t chunkSize : {1, 4096}) {
+        for (const auto &sample : data) {
+            auto output = memoryOutputStream(chunkSize);
+            auto encoder = binaryEncoder();
+            encoder->init(*output);
+            ((*encoder).*encode)(std::bit_cast<Float>(sample.bits));
+            encoder->flush();
+            auto bytes = snapshot(*output);
+            BOOST_CHECK_EQUAL(encoder->byteCount(), sample.bytes.size());
+            BOOST_CHECK_EQUAL_COLLECTIONS(bytes->begin(), bytes->end(),
+                                          sample.bytes.begin(), sample.bytes.end());
+        }
+    }
+}
+
+template<typename Float, typename Bits, size_t N>
+static void testBinaryFloatingPointDecoding(const BinaryFloatingPointData<Bits> (&data)[N],
+                                            Float (Decoder::*decode)()) {
+    for (size_t chunkSize : {1, 4096}) {
+        for (const auto &sample : data) {
+            auto output = memoryOutputStream(chunkSize);
+            StreamWriter writer(*output);
+            writer.writeBytes(sample.bytes.data(), sample.bytes.size());
+            writer.write(1); // Check that decoding consumes exactly the floating-point bytes.
+            writer.flush();
+            auto input = memoryInputStream(*output);
+            auto decoder = binaryDecoder();
+            decoder->init(*input);
+            BOOST_CHECK_EQUAL(std::bit_cast<Bits>(((*decoder).*decode)()), sample.bits);
+            BOOST_CHECK(decoder->decodeBool());
+        }
+    }
+}
+
+static void testBinaryFloatEncoding() {
+    testBinaryFloatingPointEncoding(binaryFloatData, &Encoder::encodeFloat);
+}
+
+static void testBinaryFloatDecoding() {
+    testBinaryFloatingPointDecoding(binaryFloatData, &Decoder::decodeFloat);
+}
+
+static void testBinaryDoubleEncoding() {
+    testBinaryFloatingPointEncoding(binaryDoubleData, &Encoder::encodeDouble);
+}
+
+static void testBinaryDoubleDecoding() {
+    testBinaryFloatingPointDecoding(binaryDoubleData, &Decoder::decodeDouble);
+}
+
 static void testLimitsJsonCodec() {
     const char *s = "{ \"type\": \"record\", \"name\": \"r\", \"fields\": ["
                     "{ \"name\": \"d1\", \"type\": \"double\" },"
@@ -2155,6 +2252,10 @@ init_unit_test_suite(int, char *[]) {
     avro::parsing::add_tests(*ts);
     ts->add(BOOST_TEST_CASE(avro::testStreamLifetimes));
     ts->add(BOOST_TEST_CASE(avro::testLimitsBinaryCodec));
+    ts->add(BOOST_TEST_CASE(avro::testBinaryFloatEncoding));
+    ts->add(BOOST_TEST_CASE(avro::testBinaryFloatDecoding));
+    ts->add(BOOST_TEST_CASE(avro::testBinaryDoubleEncoding));
+    ts->add(BOOST_TEST_CASE(avro::testBinaryDoubleDecoding));
     ts->add(BOOST_TEST_CASE(avro::testLimitsJsonCodec));
     ts->add(BOOST_PARAM_TEST_CASE(&avro::testJson, avro::jsonData,
                                   ENDOF(avro::jsonData)));

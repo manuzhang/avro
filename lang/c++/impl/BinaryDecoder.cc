@@ -19,6 +19,8 @@
 #include "Decoder.hh"
 #include "Exception.hh"
 #include "Zigzag.hh"
+#include <array>
+#include <bit>
 #include <memory>
 
 namespace avro {
@@ -90,15 +92,23 @@ int64_t BinaryDecoder::decodeLong() {
 }
 
 float BinaryDecoder::decodeFloat() {
-    float result;
-    in_.readBytes(reinterpret_cast<uint8_t *>(&result), sizeof(float));
-    return result;
+    std::array<uint8_t, sizeof(uint32_t)> bytes{};
+    in_.readBytes(bytes.data(), bytes.size());
+    uint32_t bits = 0;
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        bits |= static_cast<uint32_t>(bytes[i]) << (8 * i);
+    }
+    return std::bit_cast<float>(bits);
 }
 
 double BinaryDecoder::decodeDouble() {
-    double result;
-    in_.readBytes(reinterpret_cast<uint8_t *>(&result), sizeof(double));
-    return result;
+    std::array<uint8_t, sizeof(uint64_t)> bytes{};
+    in_.readBytes(bytes.data(), bytes.size());
+    uint64_t bits = 0;
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        bits |= static_cast<uint64_t>(bytes[i]) << (8 * i);
+    }
+    return std::bit_cast<double>(bits);
 }
 
 size_t BinaryDecoder::doDecodeLength() {
